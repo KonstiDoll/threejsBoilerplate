@@ -17,33 +17,14 @@ const props = defineProps({
         default: false
     }
 })
-watch(() => props.cubeJump, (newVal) => {
-    if (newVal) {
-        new TWEEN.Tween({ y: cube.position.y })
-            .to({ y: 2 }, 500)
-            .easing(TWEEN.Easing.Quartic.Out)
-            .onUpdate((object) => {
-                cube.position.y = object.y;
-            })
-            .onComplete(() => {
-                new TWEEN.Tween({ y: cube.position.y })
-                    .to({ y: 0.5 }, 1000)
-                    .easing(TWEEN.Easing.Bounce.Out)
-                    .onUpdate((object) => {
-                        cube.position.y = object.y;
-                    })
-                    .start();
-            })
-            .start();
-    }
-})
+
 // Create a scene
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xff8de1);
 
 // Add a directional light
 const directionalLight = new THREE.DirectionalLight(0xffffff, 1.4);
-directionalLight.position.set(-5, 5, 5);
+directionalLight.position.set(-2, 5, 4);
 scene.add(directionalLight);
 
 // Add an ambient light
@@ -73,6 +54,17 @@ const renderer = new THREE.WebGLRenderer();
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping
 
+// Enable shadows
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+directionalLight.castShadow = true;
+directionalLight.shadow.mapSize.width = 1024;
+directionalLight.shadow.mapSize.height = 1024;
+
+cube.castShadow = true;
+plane.receiveShadow = true;
+
+
 // Create controls
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -80,6 +72,7 @@ controls.enableDamping = true;
 const threejsMap = ref<Node>()
 
 const domElement = renderer.domElement;
+
 onMounted(() => {
 
     threejsMap.value?.appendChild(domElement);
@@ -105,6 +98,26 @@ function animate() {
     TWEEN.update();
 }
 
+watch(() => props.cubeJump, (newVal) => {
+    if (newVal) {
+        new TWEEN.Tween({ y: cube.position.y })
+            .to({ y: 2 }, 500)
+            .easing(TWEEN.Easing.Quartic.Out)
+            .onUpdate((object) => {
+                cube.position.y = object.y;
+            })
+            .onComplete(() => {
+                new TWEEN.Tween({ y: cube.position.y })
+                    .to({ y: 0.5 }, 1000)
+                    .easing(TWEEN.Easing.Bounce.Out)
+                    .onUpdate((object) => {
+                        cube.position.y = object.y;
+                    })
+                    .start();
+            })
+            .start();
+    }
+})
 
 </script>
 <style scoped></style>
