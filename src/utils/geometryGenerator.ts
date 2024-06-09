@@ -16,3 +16,24 @@ export const createPlane = (): THREE.Object3D => {
     plane.rotation.x = -Math.PI / 2;
     return plane;
 }
+
+export const createBatchedMesh = (): THREE.Object3D => {
+    const box = new THREE.BoxGeometry(1, 1, 1);
+    const sphere = new THREE.BoxGeometry(1, 1, 1);
+    const material = new THREE.MeshStandardMaterial({ color: 0x70f39e });
+
+    // initialize and add geometries into the batched mesh
+    const batchedMesh = new THREE.BatchedMesh(10, 5000, 10000, material);
+    const boxId = batchedMesh.addGeometry(box);
+    const sphereId = batchedMesh.addGeometry(sphere);
+
+    const boxMatrix = new THREE.Matrix4();
+    const sphereMatrix = new THREE.Matrix4();
+    boxMatrix.setPosition(new THREE.Vector3(2, 0.5 ,2));
+    sphereMatrix.setPosition(new THREE.Vector3(-2, 0.5, -2));
+    // position the geometries
+    batchedMesh.setMatrixAt(boxId, boxMatrix);
+    batchedMesh.setMatrixAt(sphereId, sphereMatrix);
+
+    return batchedMesh;
+}

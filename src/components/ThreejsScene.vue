@@ -11,7 +11,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { onMounted, ref, watch } from 'vue';
 import * as TWEEN from '@tweenjs/tween.js';
-import { createCube, createPlane } from '../utils/geometryGenerator.ts'
+import { createBatchedMesh, createCube, createPlane } from '../utils/geometryGenerator.ts'
 
 const props = defineProps({
     cubeJump: {
@@ -44,6 +44,9 @@ const cube = createCube();
 scene.add(cube);
 const plane = createPlane();
 scene.add(plane);
+const batchedMesh = createBatchedMesh();
+scene.add(batchedMesh);
+
 
 // Create a camera
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -63,6 +66,7 @@ directionalLight.shadow.mapSize.height = 1024;
 
 cube.castShadow = true;
 plane.receiveShadow = true;
+batchedMesh.castShadow = true;
 
 // Create controls
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -116,7 +120,7 @@ watch(() => props.cubeJump, (newVal) => {
                     .start();
             })
             .start();
-    }
+    };
 })
 
 </script>
