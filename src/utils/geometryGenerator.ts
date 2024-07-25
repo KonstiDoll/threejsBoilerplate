@@ -27,6 +27,8 @@ export const createBatchedMesh = (): THREE.Object3D => {
     const boxId = batchedMesh.addGeometry(box);
     const sphereId = batchedMesh.addGeometry(sphere);
 
+    batchedMesh.addInstance(boxId);
+    batchedMesh.addInstance(sphereId);
     const boxMatrix = new THREE.Matrix4();
     const sphereMatrix = new THREE.Matrix4();
     boxMatrix.setPosition(new THREE.Vector3(2, 0.5 ,2));
