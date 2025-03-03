@@ -1,17 +1,15 @@
 <template>
     <div class="h-screen w-screen">
-        <div ref='threejsMap'>
-
-        </div>
+        <div ref='threejsMap' />
     </div>
-    <ExampleComponent @addGroupToScene="addGroupToScene" />
 </template>
 <script setup lang="ts">
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { onMounted, ref, watch } from 'vue';
-import * as TWEEN from '@tweenjs/tween.js';
+import { Tween, Group, Easing } from '@tweenjs/tween.js';
 import { createBatchedMesh, createCube, createPlane } from '../utils/geometryGenerator.ts'
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
 const props = defineProps({
     cubeJump: {
@@ -19,15 +17,7 @@ const props = defineProps({
         default: false
     }
 })
-const addGroupToScene = (group: THREE.Group) => {
-    const groupAlreadyInScene = scene.children.find((child) => child.name === group.name)
-    if (groupAlreadyInScene) {
-        groupAlreadyInScene.children.push(...group.children)
-    }
-    else {
-        scene.add(group)
-    }
-}
+const tweenGroup = new Group();
 // Create a scene
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xff8de1);
@@ -72,6 +62,32 @@ batchedMesh.castShadow = true;
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
+// Add TransformControls
+const transformControls = new TransformControls(camera, renderer.domElement);
+transformControls.attach(cube); // Attach to the cube initially
+const gizmo = transformControls.getHelper();
+scene.add(gizmo);
+
+// Handle interaction between orbit controls and transform controls
+transformControls.addEventListener('dragging-changed', (event) => {
+    controls.enabled = !event.value; // Disable orbit controls when transforming
+});
+
+// Optional: Add key controls to switch transform modes
+window.addEventListener('keydown', (event) => {
+    switch (event.key) {
+        case 'g': // translate
+            transformControls.setMode('translate');
+            break;
+        case 'r': // rotate
+            transformControls.setMode('rotate');
+            break;
+        case 's': // scale
+            transformControls.setMode('scale');
+            break;
+    }
+});
+
 const threejsMap = ref<Node>()
 
 const domElement = renderer.domElement;
@@ -98,29 +114,37 @@ function animate() {
     requestAnimationFrame(animate);
     renderer.render(scene, camera);
     controls.update();
-    TWEEN.update();
+    tweenGroup.update();
 }
-
 
 watch(() => props.cubeJump, (newVal) => {
     if (newVal) {
-        new TWEEN.Tween({ y: cube.position.y })
-            .to({ y: 2 }, 500)
-            .easing(TWEEN.Easing.Quartic.Out)
+        // Create new tweens each time with current position values
+        const startY = cube.position.y;
+        const jumpHeight = 2;
+        
+        const jumpTween = new Tween({ y: startY })
+            .to({ y: startY + jumpHeight }, 500)
+            .easing(Easing.Quartic.Out)
             .onUpdate((object) => {
                 cube.position.y = object.y;
             })
             .onComplete(() => {
-                new TWEEN.Tween({ y: cube.position.y })
-                    .to({ y: 0.5 }, 1000)
-                    .easing(TWEEN.Easing.Bounce.Out)
+                // Create fall tween when jump completes
+                const fallTween = new Tween({ y: startY + jumpHeight })
+                    .to({ y: startY }, 1000)
+                    .easing(Easing.Bounce.Out)
                     .onUpdate((object) => {
                         cube.position.y = object.y;
-                    })
-                    .start();
-            })
-            .start();
-    };
+                    });
+                
+                tweenGroup.add(fallTween);
+                fallTween.start();
+            });
+        
+        tweenGroup.add(jumpTween);
+        jumpTween.start();
+    }
 })
 
 </script>
