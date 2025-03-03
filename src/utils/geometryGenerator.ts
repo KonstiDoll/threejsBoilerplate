@@ -10,10 +10,10 @@ export const createCube = (): THREE.Object3D => {
 }
 
 export const createPlane = (): THREE.Object3D => {
-    const planeGeometry = new THREE.PlaneGeometry(5, 5, 5);
+    const planeGeometry = new THREE.PlaneGeometry(5, 5);
+    planeGeometry.rotateX(-Math.PI / 2);
     const planeMaterial = new THREE.MeshStandardMaterial({ color: 0xa492f7 });
     const plane = new THREE.Mesh(planeGeometry, planeMaterial);
-    plane.rotation.x = -Math.PI / 2;
     return plane;
 }
 
