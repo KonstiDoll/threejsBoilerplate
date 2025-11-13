@@ -1,9 +1,9 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 
 
 export const createCube = (): THREE.Object3D => {
     const geometry = new THREE.BoxGeometry();
-    const material = new THREE.MeshStandardMaterial({ color: 0x70f39e });
+    const material = new THREE.MeshStandardNodeMaterial({ color: 0x70f39e });
     const cube = new THREE.Mesh(geometry, material);
     cube.position.y = .5;
     return cube;
@@ -12,7 +12,7 @@ export const createCube = (): THREE.Object3D => {
 export const createPlane = (): THREE.Object3D => {
     const planeGeometry = new THREE.PlaneGeometry(5, 5);
     planeGeometry.rotateX(-Math.PI / 2);
-    const planeMaterial = new THREE.MeshStandardMaterial({ color: 0xa492f7 });
+    const planeMaterial = new THREE.MeshStandardNodeMaterial({ color: 0xa492f7 });
     const plane = new THREE.Mesh(planeGeometry, planeMaterial);
     return plane;
 }
@@ -20,7 +20,7 @@ export const createPlane = (): THREE.Object3D => {
 export const createBatchedMesh = (): THREE.Object3D => {
     const box = new THREE.BoxGeometry(1, 1, 1);
     const sphere = new THREE.BoxGeometry(1, 1, 1);
-    const material = new THREE.MeshStandardMaterial({ color: 0x70f39e });
+    const material = new THREE.MeshStandardNodeMaterial({ color: 0x70f39e });
 
     // initialize and add geometries into the batched mesh
     const batchedMesh = new THREE.BatchedMesh(10, 5000, 10000, material);

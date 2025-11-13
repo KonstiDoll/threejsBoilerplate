@@ -1,15 +1,34 @@
 <template>
     <div class="h-screen w-screen">
+        <!-- WebGPU Status Banner -->
+        <div
+            v-if="webgpuStatus"
+            class="absolute top-16 left-4 z-20 p-3 rounded-lg shadow-lg max-w-md"
+            :class="webgpuStatus.supported ? 'bg-green-100 text-green-800 border-2 border-green-400' : 'bg-red-100 text-red-800 border-2 border-red-400'"
+        >
+            <div class="flex items-start gap-2">
+                <span class="text-xl">{{ webgpuStatus.supported ? '✅' : '⚠️' }}</span>
+                <div>
+                    <p class="font-semibold">{{ webgpuStatus.supported ? 'WebGPU Active' : 'WebGPU Unavailable' }}</p>
+                    <p class="text-sm">{{ webgpuStatus.message }}</p>
+                    <p v-if="webgpuStatus.browserInfo" class="text-xs mt-1 opacity-75">
+                        {{ webgpuStatus.browserInfo.name }} {{ webgpuStatus.browserInfo.version }}
+                    </p>
+                </div>
+            </div>
+        </div>
+
         <div ref='threejsMap' />
     </div>
 </template>
 <script setup lang="ts">
-import * as THREE from 'three'
+import * as THREE from 'three/webgpu'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { onMounted, ref, watch } from 'vue';
 import { Tween, Group, Easing } from '@tweenjs/tween.js';
 import { createBatchedMesh, createCube, createPlane } from '../utils/geometryGenerator.ts'
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { detectWebGPU, type WebGPUDetectionResult } from '../utils/webgpuDetector';
 
 const props = defineProps({
     cubeJump: {
@@ -42,8 +61,8 @@ scene.add(batchedMesh);
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 camera.position.z = 5;
 
-// Create a renderer
-const renderer = new THREE.WebGLRenderer();
+// Create a WebGPU renderer (async initialization)
+const renderer = new THREE.WebGPURenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping
 
@@ -89,16 +108,49 @@ window.addEventListener('keydown', (event) => {
 });
 
 const threejsMap = ref<Node>()
+const isInitialized = ref(false)
+const webgpuStatus = ref<WebGPUDetectionResult | null>(null)
 
 const domElement = renderer.domElement;
 
-onMounted(() => {
+onMounted(async () => {
+    try {
+        // Detect WebGPU support
+        const detection = await detectWebGPU();
+        webgpuStatus.value = detection;
 
-    threejsMap.value?.appendChild(domElement);
+        if (!detection.supported) {
+            console.warn('WebGPU not supported:', detection.message);
+            // Auto-hide warning after 8 seconds
+            setTimeout(() => {
+                webgpuStatus.value = null;
+            }, 8000);
+            return;
+        }
 
-    window.addEventListener("resize", setSize);
-    setSize();
-    animate();
+        // Initialize WebGPU renderer
+        await renderer.init();
+        isInitialized.value = true;
+
+        threejsMap.value?.appendChild(domElement);
+
+        window.addEventListener("resize", setSize);
+        setSize();
+
+        // Use setAnimationLoop for WebGPU
+        renderer.setAnimationLoop(animate);
+
+        // Auto-hide success message after 5 seconds
+        setTimeout(() => {
+            webgpuStatus.value = null;
+        }, 5000);
+    } catch (error) {
+        console.error('WebGPU initialization failed:', error);
+        webgpuStatus.value = {
+            supported: false,
+            message: `Initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+        };
+    }
 })
 
 const setSize = () => {
@@ -109,9 +161,8 @@ const setSize = () => {
     renderer.setPixelRatio(window.devicePixelRatio);
 };
 
-// Render the scene
+// Render the scene (called by setAnimationLoop)
 function animate() {
-    requestAnimationFrame(animate);
     renderer.render(scene, camera);
     controls.update();
     tweenGroup.update();
