@@ -358,6 +358,325 @@ export class SolarSimulator {
   }
 
   /**
+   * Compute cumulative solar irradiance with shadow occlusion
+   *
+   * This method extends the basic cumulative calculation by considering shadows
+   * cast by other objects in the scene. Uses raycasting to detect occlusions and
+   * applies a diffuse sky component for shadowed areas.
+   *
+   * Algorithm:
+   * 1. For each time step (sunrise to sunset):
+   *    - Update sun position and direction
+   *    - For each sample point on the mesh:
+   *      * Cast ray from surface point towards sun
+   *      * If occluded: apply 12% diffuse irradiance
+   *      * If not occluded: apply full direct irradiance with Lambert's cosine law
+   *    - Average irradiance across all sample points
+   *    - Accumulate energy (Wh/m² = W/m² × hours)
+   *
+   * @param date Date to analyze
+   * @param mesh Mesh to calculate irradiance for
+   * @param scene Scene containing occluding objects
+   * @param options Configuration options
+   * @returns Total accumulated irradiance in Wh/m² considering shadows
+   */
+  public async computeCumulativeSurfaceIrradianceWithShadows(
+    date: Date,
+    mesh: THREE.Mesh,
+    scene: THREE.Scene,
+    options: {
+      /** Number of sample points per mesh (default: 9 = 3×3 grid) */
+      samplePoints?: number,
+      /** Diffuse sky irradiance as fraction of direct (default: 0.12 = 12%) */
+      diffuseComponent?: number,
+      /** Time step in minutes (default: 15) */
+      timeStepMinutes?: number,
+      /** Progress callback (timestep, total) */
+      onProgress?: (current: number, total: number) => void,
+      /** Group to exclude from occlusion testing (e.g., plane group containing sub-meshes) */
+      excludeGroup?: THREE.Group
+    } = {}
+  ): Promise<number> {
+    const samplePoints = options.samplePoints ?? 9;
+    const diffuseComponent = options.diffuseComponent ?? 0.12;
+    const timeStepMinutes = options.timeStepMinutes ?? 15;
+
+    // Get sun times for the day
+    const times = this.getSunTimes(date);
+
+    if (!times.sunrise || !times.sunset) {
+      // Handle polar day/night
+      return 0;
+    }
+
+    // Generate sample points on mesh surface
+    const samples = this.generateSamplePoints(mesh, samplePoints);
+
+    // Initialize raycaster
+    const raycaster = new THREE.Raycaster();
+    raycaster.far = 10000; // 10km max distance
+
+    // Initialize accumulator
+    let totalIrradiance = 0;
+
+    // Iterate from sunrise to sunset
+    const currentTime = new Date(times.sunrise);
+    const sunsetTime = new Date(times.sunset);
+
+    let timestep = 0;
+    const totalTimesteps = Math.ceil((sunsetTime.getTime() - times.sunrise.getTime()) / (timeStepMinutes * 60 * 1000));
+
+    while (currentTime <= sunsetTime) {
+      // Get sun position for current time
+      const position = SunCalc.getPosition(currentTime, this.config.latitude, this.config.longitude);
+
+      if (position.altitude > 0) {
+        // Calculate sun direction vector
+        const sunDir = this.azimuthAltitudeToVector3(position.azimuth, position.altitude);
+
+        // Calculate direct normal irradiance with atmospheric model
+        const dni = this.calculateIrradiance(position.altitude);
+
+        // Calculate average irradiance across all sample points
+        let sampleIrradianceSum = 0;
+
+        for (const sample of samples) {
+          // Calculate cosine of angle between sun and surface normal
+          const cosTheta = Math.max(0, sample.normal.dot(sunDir));
+
+          if (cosTheta > 0) {
+            // Surface faces sun, check for occlusion
+
+            // CRITICAL FIX: Offset ray origin BEFORE setting raycaster
+            // This prevents self-intersection and ensures consistent ray start position
+            const rayOrigin = sample.point.clone().addScaledVector(sample.normal, 0.01);
+
+            // CRITICAL: Invert sun direction for shadow raycasting
+            // Light rays travel: Sun → Surface (sunDir)
+            // Shadow rays travel: Surface → Sun (-sunDir for occlusion detection)
+            raycaster.set(rayOrigin, sunDir.clone().negate());
+
+            // Check for intersections with other objects
+            const intersects = raycaster.intersectObjects(scene.children, true);
+
+            // Filter out self-intersections and excluded group members
+            const occluded = intersects.some(hit => {
+              // Don't count the mesh itself
+              if (hit.object === mesh) return false;
+
+              // Don't count other meshes in the same excluded group (e.g., plane sub-meshes)
+              if (options.excludeGroup && hit.object.parent === options.excludeGroup) {
+                return false;
+              }
+
+              // Count as occluded if hit is far enough away (not floating point error)
+              return hit.distance > 0.01;
+            });
+
+            let effectiveIrradiance: number;
+            if (occluded) {
+              // Shadowed: only diffuse sky irradiance
+              effectiveIrradiance = dni * diffuseComponent;
+            } else {
+              // Direct sunlight: full irradiance with Lambert's cosine law
+              effectiveIrradiance = dni * cosTheta;
+            }
+
+            sampleIrradianceSum += effectiveIrradiance;
+          } else {
+            // Surface faces away from sun: only diffuse component
+            sampleIrradianceSum += dni * diffuseComponent * 0.5; // Reduced diffuse for back-facing
+          }
+        }
+
+        // Average across sample points
+        const avgIrradiance = sampleIrradianceSum / samples.length;
+
+        // Accumulate energy (Wh/m² = W/m² × hours)
+        totalIrradiance += avgIrradiance * (timeStepMinutes / 60);
+      }
+
+      // Advance time
+      currentTime.setMinutes(currentTime.getMinutes() + timeStepMinutes);
+      timestep++;
+
+      // Report progress
+      if (options.onProgress) {
+        options.onProgress(timestep, totalTimesteps);
+      }
+    }
+
+    return totalIrradiance;
+  }
+
+  /**
+   * Generate deterministic grid-based barycentric coordinates for triangle sampling
+   *
+   * Instead of random sampling, uses a regular grid pattern for reproducible results.
+   * This ensures that the same mesh with the same sample count always produces
+   * identical sample points, making simulations deterministic.
+   *
+   * @param count Target number of sample points
+   * @returns Array of barycentric coordinate pairs [u, v] where u+v ≤ 1, w = 1-u-v
+   */
+  private generateGridBarycentric(count: number): Array<{ u: number; v: number }> {
+    const samples: Array<{ u: number; v: number }> = [];
+
+    if (count === 1) {
+      // Single sample: triangle centroid (most representative point)
+      samples.push({ u: 1/3, v: 1/3 });
+      return samples;
+    }
+
+    // Calculate grid size (approximate square root)
+    // Triangle occupies half of a square in barycentric space, so we need denser grid
+    const gridSize = Math.ceil(Math.sqrt(count * 2));
+
+    // Generate grid points in barycentric space (u, v coordinates)
+    // Valid region: u ≥ 0, v ≥ 0, u+v ≤ 1
+    for (let i = 0; i <= gridSize; i++) {
+      for (let j = 0; j <= gridSize - i; j++) {
+        const u = i / gridSize;
+        const v = j / gridSize;
+
+        // Only include points inside triangle (u + v ≤ 1)
+        if (u + v <= 1) {
+          samples.push({ u, v });
+
+          // Stop when we have enough samples
+          if (samples.length >= count) {
+            return samples;
+          }
+        }
+      }
+    }
+
+    return samples;
+  }
+
+  /**
+   * Generate sample points on mesh surface for shadow ray testing
+   *
+   * Samples points directly from the mesh faces with proper normals.
+   * Uses DETERMINISTIC grid-based sampling (not random) for reproducible results.
+   *
+   * @param mesh Mesh to sample
+   * @param count Approximate number of sample points
+   * @returns Array of sample points with positions and normals
+   */
+  private generateSamplePoints(
+    mesh: THREE.Mesh,
+    count: number
+  ): Array<{ point: THREE.Vector3; normal: THREE.Vector3 }> {
+    const samples: Array<{ point: THREE.Vector3; normal: THREE.Vector3 }> = [];
+
+    // Get mesh geometry
+    const geometry = mesh.geometry;
+    if (!geometry.attributes.position || !geometry.index) {
+      console.warn('Mesh has no position attribute or index');
+      return samples;
+    }
+
+    // Ensure normals are computed
+    if (!geometry.attributes.normal) {
+      geometry.computeVertexNormals();
+    }
+
+    const positions = geometry.attributes.position;
+    const normals = geometry.attributes.normal;
+    const indices = geometry.index;
+
+    // Calculate how many samples per face
+    const faceCount = indices.count / 3;
+    const samplesPerFace = Math.max(1, Math.ceil(count / faceCount));
+
+    // Generate deterministic grid-based barycentric coordinates
+    const barycentricGrid = this.generateGridBarycentric(samplesPerFace);
+
+    // Get world matrix for transformations
+    mesh.updateMatrixWorld(true);
+    const worldMatrix = mesh.matrixWorld;
+    const normalMatrix = new THREE.Matrix3().getNormalMatrix(worldMatrix);
+
+    // Sample from each face
+    for (let i = 0; i < indices.count; i += 3) {
+      // Get triangle vertices
+      const i0 = indices.getX(i);
+      const i1 = indices.getX(i + 1);
+      const i2 = indices.getX(i + 2);
+
+      const v0 = new THREE.Vector3(
+        positions.getX(i0),
+        positions.getY(i0),
+        positions.getZ(i0)
+      );
+      const v1 = new THREE.Vector3(
+        positions.getX(i1),
+        positions.getY(i1),
+        positions.getZ(i1)
+      );
+      const v2 = new THREE.Vector3(
+        positions.getX(i2),
+        positions.getY(i2),
+        positions.getZ(i2)
+      );
+
+      // Get vertex normals
+      const n0 = new THREE.Vector3(
+        normals.getX(i0),
+        normals.getY(i0),
+        normals.getZ(i0)
+      );
+      const n1 = new THREE.Vector3(
+        normals.getX(i1),
+        normals.getY(i1),
+        normals.getZ(i1)
+      );
+      const n2 = new THREE.Vector3(
+        normals.getX(i2),
+        normals.getY(i2),
+        normals.getZ(i2)
+      );
+
+      // Sample points on this triangle using deterministic grid barycentric coordinates
+      for (const bary of barycentricGrid) {
+        const u = bary.u;
+        const v = bary.v;
+        const w = 1 - u - v;
+
+        // Interpolate position using barycentric coordinates
+        const point = new THREE.Vector3()
+          .addScaledVector(v0, u)
+          .addScaledVector(v1, v)
+          .addScaledVector(v2, w);
+
+        // Transform to world space
+        point.applyMatrix4(worldMatrix);
+
+        // Interpolate normal using barycentric coordinates
+        const normal = new THREE.Vector3()
+          .addScaledVector(n0, u)
+          .addScaledVector(n1, v)
+          .addScaledVector(n2, w);
+
+        // Transform normal to world space
+        normal.applyMatrix3(normalMatrix).normalize();
+
+        samples.push({ point, normal });
+
+        // Early exit if we have enough samples
+        if (samples.length >= count) {
+          console.log(`Generated ${samples.length} deterministic surface sample points for mesh`);
+          return samples;
+        }
+      }
+    }
+
+    console.log(`Generated ${samples.length} deterministic surface sample points for mesh`);
+    return samples;
+  }
+
+  /**
    * Convert radians to degrees (utility)
    */
   public static radToDeg(rad: number): number {

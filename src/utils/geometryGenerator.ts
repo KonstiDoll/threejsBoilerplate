@@ -1,6 +1,30 @@
 import * as THREE from 'three/webgpu';
+import { uniform } from 'three/tsl';
 import type { SolarSimulator } from './solarSimulation';
 import { createRealTimeSolarHeatMapNode, createCumulativeHeatMapNode, createSolarOverlayNode, DEFAULT_HEATMAP_CONFIG } from './solarShaders';
+
+// Store per-mesh cumulative irradiance uniforms
+const meshCumulativeUniforms = new WeakMap<THREE.Mesh, any>();
+
+/**
+ * Get or create a cumulative irradiance uniform for a specific mesh
+ * This allows each mesh to have its own shadow-aware cumulative value
+ */
+export function getMeshCumulativeUniform(mesh: THREE.Mesh): any {
+    if (!meshCumulativeUniforms.has(mesh)) {
+        meshCumulativeUniforms.set(mesh, uniform(0.0));
+    }
+    return meshCumulativeUniforms.get(mesh)!;
+}
+
+/**
+ * Update the cumulative irradiance value for a specific mesh
+ */
+export function updateMeshCumulativeValue(mesh: THREE.Mesh, value: number): void {
+    const meshUniform = getMeshCumulativeUniform(mesh);
+    meshUniform.value = value;
+    console.log(`📊 Updated mesh cumulative value: ${value.toFixed(0)} Wh/m²`);
+}
 
 
 export const createCube = (): THREE.Object3D => {
@@ -143,9 +167,11 @@ export const switchMaterialMode = (
         const colorNode = createSolarOverlayNode(baseColor, heatMapNode, heatMapStrength);
         material.colorNode = colorNode;
     } else {
-        // Create cumulative heat map node
+        // Create cumulative heat map node using PER-MESH uniform
+        // This allows each mesh to show its own shadow-aware cumulative value
+        const meshCumulativeUniform = getMeshCumulativeUniform(mesh);
         const heatMapNode = createCumulativeHeatMapNode(
-            solarSimulator.cumulativeIrradiance,
+            meshCumulativeUniform,
             {
                 ...DEFAULT_HEATMAP_CONFIG,
                 maxValue: 6000 // Wh/m²
@@ -153,10 +179,41 @@ export const switchMaterialMode = (
         );
         const colorNode = createSolarOverlayNode(baseColor, heatMapNode, heatMapStrength);
         material.colorNode = colorNode;
+
+        console.log(`🔄 Switched mesh to cumulative mode with uniform value: ${meshCumulativeUniform.value.toFixed(0)} Wh/m²`);
     }
 
     // CRITICAL: Mark material for update (WebGPU requires this for node changes)
     material.needsUpdate = true;
+};
+
+/**
+ * Switch material mode for an object (handles both meshes and groups recursively)
+ *
+ * @param object Mesh or Group to switch mode
+ * @param solarSimulator Solar simulator with uniforms
+ * @param mode Visualization mode to switch to
+ * @param baseColor Base color for the material
+ * @param heatMapStrength Blend strength
+ */
+export const switchObjectMaterialMode = (
+    object: THREE.Object3D,
+    solarSimulator: SolarSimulator,
+    mode: 'realtime' | 'cumulative',
+    baseColor: THREE.Color = new THREE.Color(0xcccccc),
+    heatMapStrength: number = 0.8
+): void => {
+    if (object instanceof THREE.Mesh) {
+        // Single mesh - switch its material
+        switchMaterialMode(object, solarSimulator, mode, baseColor, heatMapStrength);
+    } else if (object instanceof THREE.Group) {
+        // Group - recursively switch all child meshes
+        object.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+                switchMaterialMode(child, solarSimulator, mode, baseColor, heatMapStrength);
+            }
+        });
+    }
 };
 
 /**
@@ -181,11 +238,82 @@ export const createSolarCube = (solarSimulator: SolarSimulator): THREE.Object3D 
  * @returns Plane mesh with solar visualization
  */
 export const createSolarPlane = (solarSimulator: SolarSimulator): THREE.Object3D => {
-    const planeGeometry = new THREE.PlaneGeometry(5, 5);
+    const planeGeometry = new THREE.PlaneGeometry(20, 20);
     planeGeometry.rotateX(-Math.PI / 2);
     const material = createSolarMaterial(solarSimulator, new THREE.Color(0xa492f7));
     const plane = new THREE.Mesh(planeGeometry, material);
     return plane;
+};
+
+/**
+ * Create a subdivided plane with solar heat map material
+ *
+ * Subdivides a large plane into many smaller sub-meshes (shadow meshes) to enable
+ * localized shadow visualization. Each sub-mesh has its own cumulative irradiance
+ * uniform, allowing fine-grained display of shadow patterns.
+ *
+ * @param solarSimulator Solar simulator instance
+ * @param width Total width of the plane in meters
+ * @param height Total height of the plane in meters
+ * @param gridX Number of subdivisions along X axis
+ * @param gridY Number of subdivisions along Y axis
+ * @param baseColor Base color for the plane
+ * @returns Group containing all sub-mesh planes
+ */
+export const createSubdividedSolarPlane = (
+    solarSimulator: SolarSimulator,
+    width: number = 20,
+    height: number = 20,
+    gridX: number = 10,
+    gridY: number = 10,
+    baseColor: THREE.Color = new THREE.Color(0xa492f7)
+): THREE.Group => {
+    const group = new THREE.Group();
+    group.name = 'SubdividedSolarPlane';
+
+    // Calculate sub-mesh dimensions
+    const subWidth = width / gridX;
+    const subHeight = height / gridY;
+
+    // Calculate starting offset (center the grid at origin)
+    const startX = -width / 2 + subWidth / 2;
+    const startZ = -height / 2 + subHeight / 2;
+
+    console.log(`🔲 Creating subdivided plane: ${gridX}×${gridY} grid (${gridX * gridY} sub-meshes)`);
+    console.log(`   Total: ${width}×${height}m, Sub-mesh: ${subWidth.toFixed(2)}×${subHeight.toFixed(2)}m`);
+
+    // Create sub-meshes
+    for (let ix = 0; ix < gridX; ix++) {
+        for (let iz = 0; iz < gridY; iz++) {
+            // Create small plane geometry
+            const subGeometry = new THREE.PlaneGeometry(subWidth, subHeight);
+            subGeometry.rotateX(-Math.PI / 2);
+
+            // Create solar material for this sub-mesh
+            const subMaterial = createSolarMaterial(solarSimulator, baseColor);
+
+            // Create mesh
+            const subMesh = new THREE.Mesh(subGeometry, subMaterial);
+
+            // Position sub-mesh in grid
+            subMesh.position.x = startX + ix * subWidth;
+            subMesh.position.z = startZ + iz * subHeight;
+            subMesh.position.y = 0;
+
+            // Enable shadow receiving
+            subMesh.receiveShadow = true;
+
+            // Name for debugging
+            subMesh.name = `SubPlane_${ix}_${iz}`;
+
+            // Add to group
+            group.add(subMesh);
+        }
+    }
+
+    console.log(`✅ Created ${group.children.length} sub-meshes`);
+
+    return group;
 };
 
 /**

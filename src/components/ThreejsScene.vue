@@ -127,8 +127,22 @@
                     :disabled="isSimulating"
                     class="w-full px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
                 >
-                    {{ isSimulating ? 'Simulating...' : '📊 Simulate Full Day' }}
+                    {{ isSimulating ? 'Simulating...' : '📊 Simulate Full Day (with Shadows)' }}
                 </button>
+
+                <!-- Progress Indicator -->
+                <div v-if="isSimulating && simulationProgress.total > 0" class="mt-2">
+                    <div class="flex justify-between text-xs text-gray-600 mb-1">
+                        <span>Progress</span>
+                        <span>{{ simulationProgress.current }}/{{ simulationProgress.total }}</span>
+                    </div>
+                    <div class="w-full bg-gray-200 rounded-full h-2">
+                        <div
+                            class="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                            :style="{ width: `${(simulationProgress.current / simulationProgress.total) * 100}%` }"
+                        ></div>
+                    </div>
+                </div>
             </div>
 
             <!-- Daily Results -->
@@ -180,7 +194,7 @@ import * as THREE from 'three/webgpu'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { onMounted, ref, watch } from 'vue';
 import { Tween, Group, Easing } from '@tweenjs/tween.js';
-import { createSolarBatchedMesh, createSolarCube, createSolarPlane, switchMaterialMode } from '../utils/geometryGenerator.ts'
+import { createSolarBatchedMesh, createSolarCube, createSubdividedSolarPlane, switchObjectMaterialMode, updateMeshCumulativeValue } from '../utils/geometryGenerator.ts'
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { detectWebGPU, type WebGPUDetectionResult } from '../utils/webgpuDetector';
 import { SolarSimulator, type DailySolarAnalysis } from '../utils/solarSimulation';
@@ -209,6 +223,7 @@ const solarPosition = ref<{
 
 const dailyAnalysis = ref<DailySolarAnalysis | null>(null);
 const isSimulating = ref(false);
+const simulationProgress = ref<{ current: number; total: number }>({ current: 0, total: 0 });
 const visualizationMode = ref<'realtime' | 'cumulative'>('realtime');
 
 // Initialize Solar Simulator
@@ -233,7 +248,8 @@ scene.add(ambientLight);
 // Create solar-aware geometries
 const cube = createSolarCube(solarSimulator);
 scene.add(cube);
-const plane = createSolarPlane(solarSimulator);
+// Use subdivided plane for localized shadow visualization (10×10 grid = 100 sub-meshes)
+const plane = createSubdividedSolarPlane(solarSimulator, 20, 20, 10, 10);
 scene.add(plane);
 const batchedMesh = createSolarBatchedMesh(solarSimulator);
 scene.add(batchedMesh);
@@ -256,7 +272,12 @@ directionalLight.shadow.mapSize.width = 1024;
 directionalLight.shadow.mapSize.height = 1024;
 
 cube.castShadow = true;
-plane.receiveShadow = true;
+// Enable shadow receiving for all sub-meshes in the plane group
+plane.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+        child.receiveShadow = true;
+    }
+});
 batchedMesh.castShadow = true;
 
 // Create controls
@@ -430,6 +451,7 @@ async function simulateDay() {
 
     isSimulating.value = true;
     dailyAnalysis.value = null;
+    simulationProgress.value = { current: 0, total: 0 };
 
     try {
         const [year, month, day] = solarConfig.value.date.split('-').map(Number);
@@ -439,19 +461,109 @@ async function simulateDay() {
         const analysis = await solarSimulator.analyzeDailySolarExposure(date);
         dailyAnalysis.value = analysis;
 
-        // Compute cumulative irradiance for horizontal surface (ground plane)
-        const horizontalNormal = new THREE.Vector3(0, 1, 0);
-        const cumulativeValue = await solarSimulator.computeCumulativeSurfaceIrradiance(
+        console.log('🌤️ Starting shadow-aware solar simulation...');
+
+        // Compute shadow-aware cumulative irradiance for each mesh
+        // This uses raycasting to detect shadows from other objects
+
+        // Cube (main demo object)
+        const cubeValue = await solarSimulator.computeCumulativeSurfaceIrradianceWithShadows(
             date,
-            horizontalNormal
+            cube as THREE.Mesh,
+            scene,
+            {
+                samplePoints: 27, // 3x3x3 grid for box
+                onProgress: (current, total) => {
+                    simulationProgress.value = { current, total };
+                }
+            }
         );
 
-        // Update cumulative uniform for shader
-        solarSimulator.cumulativeIrradiance.value = cumulativeValue;
+        console.log(`✅ Cube cumulative irradiance (with shadows): ${cubeValue.toFixed(0)} Wh/m²`);
 
-        console.log('Daily Solar Analysis:', {
+        // Update cube uniform
+        updateMeshCumulativeValue(cube as THREE.Mesh, cubeValue);
+
+        // Plane (subdivided into many sub-meshes for localized shadow visualization)
+        console.log('🔲 Computing shadow-aware irradiance for plane sub-meshes...');
+        const planeMeshes: THREE.Mesh[] = [];
+        plane.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+                planeMeshes.push(child);
+            }
+        });
+
+        console.log(`   Found ${planeMeshes.length} sub-meshes in plane`);
+
+        let planeMinValue = Infinity;
+        let planeMaxValue = -Infinity;
+        let planeAvgValue = 0;
+
+        // Calculate irradiance for each sub-mesh (1 sample point at center)
+        for (let i = 0; i < planeMeshes.length; i++) {
+            const subMesh = planeMeshes[i];
+
+            const subMeshValue = await solarSimulator.computeCumulativeSurfaceIrradianceWithShadows(
+                date,
+                subMesh,
+                scene,
+                {
+                    samplePoints: 1, // Single sample at center of each sub-mesh
+                    excludeGroup: plane, // CRITICAL: Exclude other sub-meshes in plane group from occlusion
+                    onProgress: (current, total) => {
+                        // Update progress for plane simulation
+                        const overallCurrent = current * planeMeshes.length + i * total;
+                        const overallTotal = total * planeMeshes.length;
+                        simulationProgress.value = { current: overallCurrent, total: overallTotal };
+                    }
+                }
+            );
+
+            // Update sub-mesh uniform
+            updateMeshCumulativeValue(subMesh, subMeshValue);
+
+            // Track statistics
+            planeMinValue = Math.min(planeMinValue, subMeshValue);
+            planeMaxValue = Math.max(planeMaxValue, subMeshValue);
+            planeAvgValue += subMeshValue;
+
+            if ((i + 1) % 10 === 0 || i === planeMeshes.length - 1) {
+                console.log(`   Processed ${i + 1}/${planeMeshes.length} sub-meshes`);
+            }
+        }
+
+        planeAvgValue /= planeMeshes.length;
+
+        console.log(`✅ Plane irradiance statistics (with shadows):`);
+        console.log(`   Min: ${planeMinValue.toFixed(0)} Wh/m²`);
+        console.log(`   Max: ${planeMaxValue.toFixed(0)} Wh/m²`);
+        console.log(`   Avg: ${planeAvgValue.toFixed(0)} Wh/m²`);
+        console.log(`   Range: ${(planeMaxValue - planeMinValue).toFixed(0)} Wh/m²`);
+
+        // BatchedMesh (two boxes)
+        const batchedValue = await solarSimulator.computeCumulativeSurfaceIrradianceWithShadows(
+            date,
+            batchedMesh as THREE.Mesh,
+            scene,
+            {
+                samplePoints: 27, // 3x3x3 grid
+                onProgress: (current, total) => {
+                    simulationProgress.value = { current, total };
+                }
+            }
+        );
+
+        console.log(`✅ BatchedMesh cumulative irradiance (with shadows): ${batchedValue.toFixed(0)} Wh/m²`);
+
+        // Update batched mesh uniform
+        updateMeshCumulativeValue(batchedMesh as THREE.Mesh, batchedValue);
+
+        console.log('☀️ Daily Solar Analysis (Shadow-aware):', {
             ...analysis,
-            cumulativeHorizontal: `${cumulativeValue.toFixed(0)} Wh/m²`
+            cumulativeCube: `${cubeValue.toFixed(0)} Wh/m²`,
+            cumulativePlaneAvg: `${planeAvgValue.toFixed(0)} Wh/m²`,
+            cumulativePlaneRange: `${planeMinValue.toFixed(0)}-${planeMaxValue.toFixed(0)} Wh/m²`,
+            cumulativeBatched: `${batchedValue.toFixed(0)} Wh/m²`
         });
 
         // Switch to cumulative visualization mode
@@ -461,6 +573,7 @@ async function simulateDay() {
         alert(`Simulation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
         isSimulating.value = false;
+        simulationProgress.value = { current: 0, total: 0 };
     }
 }
 
@@ -498,10 +611,10 @@ function switchToCumulativeMode() {
         mode: 'cumulative'
     });
 
-    // Switch all meshes to cumulative material
-    switchMaterialMode(cube as THREE.Mesh, solarSimulator, 'cumulative', new THREE.Color(0x70f39e));
-    switchMaterialMode(plane as THREE.Mesh, solarSimulator, 'cumulative', new THREE.Color(0xa492f7));
-    switchMaterialMode(batchedMesh as THREE.Mesh, solarSimulator, 'cumulative');
+    // Switch all meshes to cumulative material (handles groups recursively)
+    switchObjectMaterialMode(cube as THREE.Mesh, solarSimulator, 'cumulative', new THREE.Color(0x70f39e));
+    switchObjectMaterialMode(plane, solarSimulator, 'cumulative', new THREE.Color(0xa492f7));
+    switchObjectMaterialMode(batchedMesh as THREE.Mesh, solarSimulator, 'cumulative');
 
     console.log('✅ Switched to CUMULATIVE mode - showing daily accumulated Wh/m²');
 }
@@ -509,10 +622,10 @@ function switchToCumulativeMode() {
 function switchToRealtimeMode() {
     visualizationMode.value = 'realtime';
 
-    // Switch all meshes back to real-time material
-    switchMaterialMode(cube as THREE.Mesh, solarSimulator, 'realtime', new THREE.Color(0x70f39e));
-    switchMaterialMode(plane as THREE.Mesh, solarSimulator, 'realtime', new THREE.Color(0xa492f7));
-    switchMaterialMode(batchedMesh as THREE.Mesh, solarSimulator, 'realtime');
+    // Switch all meshes back to real-time material (handles groups recursively)
+    switchObjectMaterialMode(cube as THREE.Mesh, solarSimulator, 'realtime', new THREE.Color(0x70f39e));
+    switchObjectMaterialMode(plane, solarSimulator, 'realtime', new THREE.Color(0xa492f7));
+    switchObjectMaterialMode(batchedMesh as THREE.Mesh, solarSimulator, 'realtime');
 
     // Update sun position for current time
     updateSunPosition();
