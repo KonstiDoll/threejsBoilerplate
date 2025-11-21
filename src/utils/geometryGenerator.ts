@@ -23,7 +23,6 @@ export function getMeshCumulativeUniform(mesh: THREE.Mesh): any {
 export function updateMeshCumulativeValue(mesh: THREE.Mesh, value: number): void {
     const meshUniform = getMeshCumulativeUniform(mesh);
     meshUniform.value = value;
-    console.log(`📊 Updated mesh cumulative value: ${value.toFixed(0)} Wh/m²`);
 }
 
 
@@ -179,8 +178,6 @@ export const switchMaterialMode = (
         );
         const colorNode = createSolarOverlayNode(baseColor, heatMapNode, heatMapStrength);
         material.colorNode = colorNode;
-
-        console.log(`🔄 Switched mesh to cumulative mode with uniform value: ${meshCumulativeUniform.value.toFixed(0)} Wh/m²`);
     }
 
     // CRITICAL: Mark material for update (WebGPU requires this for node changes)
@@ -279,9 +276,6 @@ export const createSubdividedSolarPlane = (
     const startX = -width / 2 + subWidth / 2;
     const startZ = -height / 2 + subHeight / 2;
 
-    console.log(`🔲 Creating subdivided plane: ${gridX}×${gridY} grid (${gridX * gridY} sub-meshes)`);
-    console.log(`   Total: ${width}×${height}m, Sub-mesh: ${subWidth.toFixed(2)}×${subHeight.toFixed(2)}m`);
-
     // Create sub-meshes
     for (let ix = 0; ix < gridX; ix++) {
         for (let iz = 0; iz < gridY; iz++) {
@@ -310,8 +304,6 @@ export const createSubdividedSolarPlane = (
             group.add(subMesh);
         }
     }
-
-    console.log(`✅ Created ${group.children.length} sub-meshes`);
 
     return group;
 };

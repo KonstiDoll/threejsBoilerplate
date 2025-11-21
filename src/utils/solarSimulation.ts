@@ -394,7 +394,13 @@ export class SolarSimulator {
       /** Progress callback (timestep, total) */
       onProgress?: (current: number, total: number) => void,
       /** Group to exclude from occlusion testing (e.g., plane group containing sub-meshes) */
-      excludeGroup?: THREE.Group
+      excludeGroup?: THREE.Group,
+      /** Enable debug ray visualization (default: false) */
+      debugVisualization?: boolean,
+      /** Scene to add debug arrows to */
+      debugScene?: THREE.Scene,
+      /** Only visualize rays at this specific timestep index (default: visualize all) */
+      debugTimestepIndex?: number
     } = {}
   ): Promise<number> {
     const samplePoints = options.samplePoints ?? 9;
@@ -447,31 +453,79 @@ export class SolarSimulator {
           if (cosTheta > 0) {
             // Surface faces sun, check for occlusion
 
-            // CRITICAL FIX: Offset ray origin BEFORE setting raycaster
-            // This prevents self-intersection and ensures consistent ray start position
+            // Offset ray origin to prevent self-intersection
             const rayOrigin = sample.point.clone().addScaledVector(sample.normal, 0.01);
 
-            // CRITICAL: Invert sun direction for shadow raycasting
-            // Light rays travel: Sun → Surface (sunDir)
-            // Shadow rays travel: Surface → Sun (-sunDir for occlusion detection)
-            raycaster.set(rayOrigin, sunDir.clone().negate());
+            // Shadow ray direction: Surface → Sun (same as sunDir, no negation!)
+            // sunDir already points FROM surface TO sun (upward when altitude > 0)
+            raycaster.set(rayOrigin, sunDir);
 
             // Check for intersections with other objects
             const intersects = raycaster.intersectObjects(scene.children, true);
 
-            // Filter out self-intersections and excluded group members
-            const occluded = intersects.some(hit => {
+            // Filter out self-intersections, excluded group members, and non-shadow-casters
+            const validHits = intersects.filter(hit => {
               // Don't count the mesh itself
               if (hit.object === mesh) return false;
 
               // Don't count other meshes in the same excluded group (e.g., plane sub-meshes)
-              if (options.excludeGroup && hit.object.parent === options.excludeGroup) {
+              if (options.excludeGroup) {
+                // Check if hit object is a direct child of the excluded group
+                if (hit.object.parent === options.excludeGroup) {
+                  return false;
+                }
+                // Also check if the hit object IS the excluded group itself
+                if (hit.object === options.excludeGroup) {
+                  return false;
+                }
+              }
+
+              // CRITICAL: Only count objects explicitly marked as shadow casters
+              // This prevents TransformControls, helpers, and other UI elements from blocking sunlight
+              if (hit.object.userData.shadowCaster !== true) {
                 return false;
               }
 
               // Count as occluded if hit is far enough away (not floating point error)
               return hit.distance > 0.01;
             });
+
+            const occluded = validHits.length > 0;
+
+            // Visualize rays for debugging
+            if (options.debugVisualization && options.debugScene) {
+              // Only visualize if no specific timestep specified, or if this is the target timestep
+              const shouldVisualize = options.debugTimestepIndex === undefined ||
+                                     options.debugTimestepIndex === timestep;
+
+              if (shouldVisualize) {
+                const arrowColor = occluded ? 0xff0000 : 0x00ff00; // Red = shadow, Green = sun
+                const arrowLength = occluded && validHits[0] ? validHits[0].distance : 5;
+
+                const arrow = new THREE.ArrowHelper(
+                  sunDir,  // Use sunDir directly (points toward sun)
+                  rayOrigin,
+                  Math.min(arrowLength, 10), // Cap at 10m for visibility
+                  arrowColor,
+                  0.3, // head length
+                  0.2  // head width
+                );
+                arrow.name = 'DebugRay';
+                options.debugScene.add(arrow);
+
+                // If occluded, add a small sphere at hit point
+                if (occluded && validHits[0]) {
+                  const hitPoint = validHits[0].point;
+                  const sphere = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.1),
+                    new THREE.MeshBasicMaterial({ color: 0xff0000 })
+                  );
+                  sphere.position.copy(hitPoint);
+                  sphere.name = 'DebugHitPoint';
+                  options.debugScene.add(sphere);
+                }
+              }
+            }
 
             let effectiveIrradiance: number;
             if (occluded) {
@@ -666,13 +720,11 @@ export class SolarSimulator {
 
         // Early exit if we have enough samples
         if (samples.length >= count) {
-          console.log(`Generated ${samples.length} deterministic surface sample points for mesh`);
           return samples;
         }
       }
     }
 
-    console.log(`Generated ${samples.length} deterministic surface sample points for mesh`);
     return samples;
   }
 
