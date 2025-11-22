@@ -118,6 +118,37 @@
                 </div>
             </div>
 
+            <!-- GPU Compute Toggle -->
+            <div class="mb-3 flex items-center gap-2 p-2 bg-gray-50 rounded">
+                <input
+                    v-model="useGPUCompute"
+                    type="checkbox"
+                    id="gpuCompute"
+                    :disabled="!gpuSupported"
+                    class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <label for="gpuCompute" class="text-sm flex-1">
+                    ⚡ GPU Acceleration
+                    <span v-if="!gpuSupported" class="text-red-600 text-xs ml-1">(Unavailable)</span>
+                    <span v-else-if="useGPUCompute" class="text-green-600 text-xs ml-1">(Enabled)</span>
+                </label>
+            </div>
+
+            <!-- Auto-Scale Colors Toggle -->
+            <div class="mb-3 flex items-center gap-2 p-2 bg-gray-50 rounded">
+                <input
+                    v-model="autoScaleColors"
+                    type="checkbox"
+                    id="autoScale"
+                    class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <label for="autoScale" class="text-sm flex-1">
+                    🎨 Auto-scale Colors
+                    <span v-if="autoScaleColors" class="text-green-600 text-xs ml-1">(Dynamic)</span>
+                    <span v-else class="text-gray-600 text-xs ml-1">(Fixed: 0-6000 Wh/m²)</span>
+                </label>
+            </div>
+
             <!-- Daily Simulation -->
             <div class="mb-3">
                 <button
@@ -140,6 +171,38 @@
                             :style="{ width: `${(simulationProgress.current / simulationProgress.total) * 100}%` }"
                         ></div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Compute Metrics -->
+            <div v-if="computeMetrics" class="mb-3 p-2 bg-purple-50 rounded text-sm border border-purple-200">
+                <h4 class="font-semibold mb-2 text-gray-800 flex items-center gap-2">
+                    {{ computeMetrics.mode === 'gpu' ? '⚡' : '💻' }}
+                    {{ computeMetrics.mode === 'gpu' ? 'GPU' : 'CPU' }} Compute
+                </h4>
+                <div class="flex justify-between mb-1">
+                    <span class="text-gray-600">Time:</span>
+                    <span class="font-mono font-semibold">{{ (computeMetrics.time / 1000).toFixed(2) }}s</span>
+                </div>
+                <div v-if="computeMetrics.speedup" class="flex justify-between">
+                    <span class="text-gray-600">Speedup:</span>
+                    <span class="font-mono text-green-600 font-semibold">~{{ computeMetrics.speedup.toFixed(0) }}x faster</span>
+                </div>
+            </div>
+
+            <!-- Color Range Display -->
+            <div v-if="colorRange" class="mb-3 p-2 bg-blue-50 rounded text-sm border border-blue-200">
+                <h4 class="font-semibold mb-2 text-gray-800 flex items-center gap-2">
+                    🎨 Color Scale
+                </h4>
+                <div class="flex justify-between mb-1">
+                    <span class="text-gray-600">Range:</span>
+                    <span class="font-mono font-semibold">{{ colorRange.min }}-{{ colorRange.max }} Wh/m²</span>
+                </div>
+                <div class="flex items-center gap-1 text-xs mt-2">
+                    <span class="px-2 py-1 bg-blue-500 text-white rounded">Low</span>
+                    <div class="flex-1 h-4 bg-gradient-to-r from-blue-500 via-green-500 to-red-500 rounded"></div>
+                    <span class="px-2 py-1 bg-red-500 text-white rounded">High</span>
                 </div>
             </div>
 
@@ -220,6 +283,7 @@ import { createSolarBatchedMesh, createSolarCube, createSubdividedSolarPlane, sw
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { detectWebGPU, type WebGPUDetectionResult } from '../utils/webgpuDetector';
 import { SolarSimulator, type DailySolarAnalysis } from '../utils/solarSimulation';
+import { SolarGPUCompute } from '../utils/gpu';
 
 const props = defineProps({
     cubeJump: {
@@ -248,6 +312,19 @@ const isSimulating = ref(false);
 const simulationProgress = ref<{ current: number; total: number }>({ current: 0, total: 0 });
 const visualizationMode = ref<'realtime' | 'cumulative'>('realtime');
 const debugRayVisualization = ref(false);
+
+// GPU Compute State
+const useGPUCompute = ref(true); // Default to GPU if available
+const gpuSupported = ref(false);
+const computeMetrics = ref<{
+    mode: 'cpu' | 'gpu';
+    time: number;
+    speedup?: number;
+} | null>(null);
+
+// Color Scaling State
+const autoScaleColors = ref(true); // Auto-scale color range based on computed values
+const colorRange = ref<{ min: number; max: number } | null>(null);
 
 // Initialize Solar Simulator
 const solarSimulator = new SolarSimulator({
@@ -318,7 +395,7 @@ controls.enableDamping = true;
 // Add TransformControls
 const transformControls = new TransformControls(camera, renderer.domElement);
 transformControls.attach(cube); // Attach to the cube initially
-const gizmo = transformControls.getHelper();
+// const gizmo = transformControls.getHelper();
 // scene.add(gizmo);
 
 // Handle interaction between orbit controls and transform controls
@@ -376,6 +453,15 @@ onMounted(async () => {
 
         // Initialize sun position
         updateSunPosition();
+
+        // Check GPU compute support
+        gpuSupported.value = SolarGPUCompute.isSupported(renderer);
+        if (gpuSupported.value) {
+            console.log('⚡ GPU compute supported!');
+        } else {
+            console.warn('⚠️ GPU compute not supported, will use CPU raycasting');
+            useGPUCompute.value = false;
+        }
 
         // Auto-hide success message after 5 seconds
         setTimeout(() => {
@@ -483,6 +569,9 @@ async function simulateDay() {
     isSimulating.value = true;
     dailyAnalysis.value = null;
     simulationProgress.value = { current: 0, total: 0 };
+    computeMetrics.value = null;
+
+    const startTime = performance.now();
 
     try {
         const [year, month, day] = solarConfig.value.date.split('-').map(Number);
@@ -492,133 +581,215 @@ async function simulateDay() {
         const analysis = await solarSimulator.analyzeDailySolarExposure(date);
         dailyAnalysis.value = analysis;
 
-        console.log('🌤️ Starting shadow-aware solar simulation...');
+        // Determine compute mode (GPU or CPU)
+        const useGPU = useGPUCompute.value && gpuSupported.value;
+
+        if (useGPU) {
+            console.log('⚡ Using GPU-accelerated computation');
+        } else {
+            console.log('💻 Using CPU raycasting');
+        }
 
         // Compute cumulative irradiance
-        // Only objects with shadowReceiver=true use raycasting (shadow-aware calculation)
-        // Objects with only shadowCaster=true use simple calculation (no raycasting)
-
-        // Cube (shadow caster only - no raycasting)
-        const geometry = (cube as THREE.Mesh).geometry;
-        const faceNormals: THREE.Vector3[] = [];
-
-        // Get face normals from cube (6 faces)
-        const positions = geometry.attributes.position;
-        if (geometry.index) {
-            for (let i = 0; i < geometry.index.count; i += 3) {
-                const i0 = geometry.index.getX(i);
-                const v0 = new THREE.Vector3(positions.getX(i0), positions.getY(i0), positions.getZ(i0));
-                const i1 = geometry.index.getX(i + 1);
-                const v1 = new THREE.Vector3(positions.getX(i1), positions.getY(i1), positions.getZ(i1));
-                const i2 = geometry.index.getX(i + 2);
-                const v2 = new THREE.Vector3(positions.getX(i2), positions.getY(i2), positions.getZ(i2));
-
-                const normal = new THREE.Vector3()
-                    .crossVectors(v1.clone().sub(v0), v2.clone().sub(v0))
-                    .normalize();
-                faceNormals.push(normal);
-                i += 2; // Skip to next unique face (cube has 2 triangles per face)
-            }
-        }
-
-        // Average irradiance across all 6 faces
-        let cubeIrradianceSum = 0;
-        for (const normal of faceNormals) {
-            const faceIrradiance = await solarSimulator.computeCumulativeSurfaceIrradiance(date, normal);
-            cubeIrradianceSum += faceIrradiance;
-        }
-        const cubeValue = cubeIrradianceSum / faceNormals.length;
-
-        // Update cube uniform
-        updateMeshCumulativeValue(cube as THREE.Mesh, cubeValue);
-
-        // Plane (subdivided into many sub-meshes for localized shadow visualization)
-        const planeMeshes: THREE.Mesh[] = [];
-        plane.traverse((child) => {
-            if (child instanceof THREE.Mesh) {
-                planeMeshes.push(child);
-            }
-        });
-
+        let cubeValue: number;
         let planeMinValue = Infinity;
         let planeMaxValue = -Infinity;
         let planeAvgValue = 0;
 
-        // Calculate irradiance for each sub-mesh (1 sample point at center)
-        for (let i = 0; i < planeMeshes.length; i++) {
-            const subMesh = planeMeshes[i];
+        // Track scene-wide min/max for dynamic color scaling
+        let sceneMinValue = Infinity;
+        let sceneMaxValue = -Infinity;
 
-            const subMeshValue = await solarSimulator.computeCumulativeSurfaceIrradianceWithShadows(
+        if (useGPU) {
+            // ============================================
+            // GPU PATH (Fast - using WebGPU compute shaders)
+            // ============================================
+            console.log('⚡ Computing with GPU acceleration...');
+
+            // Cube
+            cubeValue = await solarSimulator.computeCumulativeSurfaceIrradianceGPU(
+                renderer,
                 date,
-                subMesh,
+                cube as THREE.Mesh,
                 scene,
                 {
-                    samplePoints: 1, // Single sample at center of each sub-mesh
-                    excludeGroup: plane, // CRITICAL: Exclude other sub-meshes in plane group from occlusion
-                    debugVisualization: debugRayVisualization.value,
-                    debugScene: scene,
-                    debugTimestepIndex: 24, // Visualize noon timestep (24 * 15min = 360min = 6h after sunrise ≈ noon)
-                    onProgress: (current, total) => {
-                        // Update progress for plane simulation
-                        const overallCurrent = current * planeMeshes.length + i * total;
-                        const overallTotal = total * planeMeshes.length;
-                        simulationProgress.value = { current: overallCurrent, total: overallTotal };
+                    shadowResolution: 2048,
+                    timeStepMinutes: 15,
+                    diffuseComponent: 0.12,
+                    onProgress: (_phase, progress) => {
+                        simulationProgress.value = {
+                            current: Math.round(progress * 100),
+                            total: 100
+                        };
                     }
                 }
             );
+            updateMeshCumulativeValue(cube as THREE.Mesh, cubeValue);
 
-            // Update sub-mesh uniform
-            updateMeshCumulativeValue(subMesh, subMeshValue);
+            // Track for scene-wide color scaling
+            sceneMinValue = Math.min(sceneMinValue, cubeValue);
+            sceneMaxValue = Math.max(sceneMaxValue, cubeValue);
 
-            // Track statistics
-            planeMinValue = Math.min(planeMinValue, subMeshValue);
-            planeMaxValue = Math.max(planeMaxValue, subMeshValue);
-            planeAvgValue += subMeshValue;
-        }
+            // Plane (process sub-meshes)
+            const planeMeshes: THREE.Mesh[] = [];
+            plane.traverse((child) => {
+                if (child instanceof THREE.Mesh) {
+                    planeMeshes.push(child);
+                }
+            });
 
-        planeAvgValue /= planeMeshes.length;
+            for (let i = 0; i < planeMeshes.length; i++) {
+                const subMesh = planeMeshes[i];
+                const subMeshValue = await solarSimulator.computeCumulativeSurfaceIrradianceGPU(
+                    renderer,
+                    date,
+                    subMesh,
+                    scene,
+                    {
+                        shadowResolution: 1024, // Lower res for sub-meshes
+                        timeStepMinutes: 15,
+                        excludeGroup: plane,
+                        onProgress: (_phase, progress) => {
+                            const overallProgress = (i + progress) / planeMeshes.length;
+                            simulationProgress.value = {
+                                current: Math.round(overallProgress * 100),
+                                total: 100
+                            };
+                        }
+                    }
+                );
+                updateMeshCumulativeValue(subMesh, subMeshValue);
+                planeMinValue = Math.min(planeMinValue, subMeshValue);
+                planeMaxValue = Math.max(planeMaxValue, subMeshValue);
+                planeAvgValue += subMeshValue;
 
-        // BatchedMesh (shadow caster only - no raycasting)
-        const batchedGeometry = (batchedMesh as THREE.Mesh).geometry;
-        const batchedFaceNormals: THREE.Vector3[] = [];
-
-        // Get face normals from batched mesh
-        const batchedPositions = batchedGeometry.attributes.position;
-        if (batchedGeometry.index) {
-            for (let i = 0; i < batchedGeometry.index.count; i += 3) {
-                const i0 = batchedGeometry.index.getX(i);
-                const v0 = new THREE.Vector3(batchedPositions.getX(i0), batchedPositions.getY(i0), batchedPositions.getZ(i0));
-                const i1 = batchedGeometry.index.getX(i + 1);
-                const v1 = new THREE.Vector3(batchedPositions.getX(i1), batchedPositions.getY(i1), batchedPositions.getZ(i1));
-                const i2 = batchedGeometry.index.getX(i + 2);
-                const v2 = new THREE.Vector3(batchedPositions.getX(i2), batchedPositions.getY(i2), batchedPositions.getZ(i2));
-
-                const normal = new THREE.Vector3()
-                    .crossVectors(v1.clone().sub(v0), v2.clone().sub(v0))
-                    .normalize();
-                batchedFaceNormals.push(normal);
-                i += 2; // Skip to next unique face
+                // Track for scene-wide color scaling
+                sceneMinValue = Math.min(sceneMinValue, subMeshValue);
+                sceneMaxValue = Math.max(sceneMaxValue, subMeshValue);
             }
+            planeAvgValue /= planeMeshes.length;
+
+        } else {
+            // ============================================
+            // CPU PATH (Existing raycasting approach)
+            // ============================================
+            console.log('💻 Computing with CPU raycasting...');
+
+            // Cube (shadow caster only - no raycasting)
+            const geometry = (cube as THREE.Mesh).geometry;
+            const faceNormals: THREE.Vector3[] = [];
+
+            // Get face normals from cube (6 faces)
+            const positions = geometry.attributes.position;
+            if (geometry.index) {
+                for (let i = 0; i < geometry.index.count; i += 3) {
+                    const i0 = geometry.index.getX(i);
+                    const v0 = new THREE.Vector3(positions.getX(i0), positions.getY(i0), positions.getZ(i0));
+                    const i1 = geometry.index.getX(i + 1);
+                    const v1 = new THREE.Vector3(positions.getX(i1), positions.getY(i1), positions.getZ(i1));
+                    const i2 = geometry.index.getX(i + 2);
+                    const v2 = new THREE.Vector3(positions.getX(i2), positions.getY(i2), positions.getZ(i2));
+
+                    const normal = new THREE.Vector3()
+                        .crossVectors(v1.clone().sub(v0), v2.clone().sub(v0))
+                        .normalize();
+                    faceNormals.push(normal);
+                    i += 2; // Skip to next unique face (cube has 2 triangles per face)
+                }
+            }
+
+            // Average irradiance across all 6 faces
+            let cubeIrradianceSum = 0;
+            for (const normal of faceNormals) {
+                const faceIrradiance = await solarSimulator.computeCumulativeSurfaceIrradiance(date, normal);
+                cubeIrradianceSum += faceIrradiance;
+            }
+            cubeValue = cubeIrradianceSum / faceNormals.length;
+
+            // Update cube uniform
+            updateMeshCumulativeValue(cube as THREE.Mesh, cubeValue);
+
+            // Track for scene-wide color scaling
+            sceneMinValue = Math.min(sceneMinValue, cubeValue);
+            sceneMaxValue = Math.max(sceneMaxValue, cubeValue);
+
+            // Plane (subdivided into many sub-meshes for localized shadow visualization)
+            const planeMeshes: THREE.Mesh[] = [];
+            plane.traverse((child) => {
+                if (child instanceof THREE.Mesh) {
+                    planeMeshes.push(child);
+                }
+            });
+
+            // Calculate irradiance for each sub-mesh (1 sample point at center)
+            for (let i = 0; i < planeMeshes.length; i++) {
+                const subMesh = planeMeshes[i];
+
+                const subMeshValue = await solarSimulator.computeCumulativeSurfaceIrradianceWithShadows(
+                    date,
+                    subMesh,
+                    scene,
+                    {
+                        samplePoints: 1, // Single sample at center of each sub-mesh
+                        excludeGroup: plane, // CRITICAL: Exclude other sub-meshes in plane group from occlusion
+                        debugVisualization: debugRayVisualization.value,
+                        debugScene: scene,
+                        debugTimestepIndex: 24, // Visualize noon timestep (24 * 15min = 360min = 6h after sunrise ≈ noon)
+                        onProgress: (current, total) => {
+                            // Update progress for plane simulation
+                            const overallCurrent = current * planeMeshes.length + i * total;
+                            const overallTotal = total * planeMeshes.length;
+                            simulationProgress.value = { current: overallCurrent, total: overallTotal };
+                        }
+                    }
+                );
+
+                // Update sub-mesh uniform
+                updateMeshCumulativeValue(subMesh, subMeshValue);
+
+                // Track statistics
+                planeMinValue = Math.min(planeMinValue, subMeshValue);
+                planeMaxValue = Math.max(planeMaxValue, subMeshValue);
+                planeAvgValue += subMeshValue;
+
+                // Track for scene-wide color scaling
+                sceneMinValue = Math.min(sceneMinValue, subMeshValue);
+                sceneMaxValue = Math.max(sceneMaxValue, subMeshValue);
+            }
+
+            planeAvgValue /= planeMeshes.length;
         }
 
-        // Average irradiance across all faces
-        let batchedIrradianceSum = 0;
-        for (const normal of batchedFaceNormals) {
-            const faceIrradiance = await solarSimulator.computeCumulativeSurfaceIrradiance(date, normal);
-            batchedIrradianceSum += faceIrradiance;
+        // Common post-processing (both GPU and CPU paths)
+        const endTime = performance.now();
+        const computeTime = endTime - startTime;
+
+        // Store metrics
+        computeMetrics.value = {
+            mode: useGPU ? 'gpu' : 'cpu',
+            time: computeTime,
+            speedup: useGPU ? (15000 / computeTime) : undefined // Estimate: CPU would take ~15s
+        };
+
+        console.log('☀️ Daily Solar Analysis:');
+        console.log(`   Mode: ${useGPU ? '⚡ GPU' : '💻 CPU'}`);
+        console.log(`   Time: ${(computeTime / 1000).toFixed(2)}s`);
+        console.log(`   Cube: ${cubeValue.toFixed(0)} Wh/m²`);
+        console.log(`   Plane avg: ${planeAvgValue.toFixed(0)} Wh/m²`);
+        console.log(`   Plane range: ${planeMinValue.toFixed(0)}-${planeMaxValue.toFixed(0)} Wh/m²`);
+
+        // Store color range for dynamic scaling
+        if (autoScaleColors.value) {
+            // Use scene-wide min/max for consistent color scale
+            colorRange.value = {
+                min: Math.floor(sceneMinValue),
+                max: Math.ceil(sceneMaxValue)
+            };
+            console.log(`   Color range: ${colorRange.value.min}-${colorRange.value.max} Wh/m²`);
+        } else {
+            // Use fixed scale
+            colorRange.value = { min: 0, max: 6000 };
         }
-        const batchedValue = batchedIrradianceSum / batchedFaceNormals.length;
-
-        // Update batched mesh uniform
-        updateMeshCumulativeValue(batchedMesh as THREE.Mesh, batchedValue);
-
-        console.log('☀️ Daily Solar Analysis (Shadow-aware):', {
-            ...analysis,
-            cumulativeCube: `${cubeValue.toFixed(0)} Wh/m²`,
-            cumulativePlaneAvg: `${planeAvgValue.toFixed(0)} Wh/m²`,
-            cumulativePlaneRange: `${planeMinValue.toFixed(0)}-${planeMaxValue.toFixed(0)} Wh/m²`,
-            cumulativeBatched: `${batchedValue.toFixed(0)} Wh/m²`
-        });
 
         // Switch to cumulative visualization mode
         switchToCumulativeMode();
@@ -665,9 +836,11 @@ function switchToCumulativeMode() {
     visualizationMode.value = 'cumulative';
 
     // Switch all meshes to cumulative material (handles groups recursively)
-    switchObjectMaterialMode(cube as THREE.Mesh, solarSimulator, 'cumulative', new THREE.Color(0x70f39e));
-    switchObjectMaterialMode(plane, solarSimulator, 'cumulative', new THREE.Color(0xa492f7));
-    switchObjectMaterialMode(batchedMesh as THREE.Mesh, solarSimulator, 'cumulative');
+    // Use colorRange if available (dynamic scaling), otherwise undefined (fixed scaling)
+    const range = colorRange.value ?? undefined;
+    switchObjectMaterialMode(cube as THREE.Mesh, solarSimulator, 'cumulative', new THREE.Color(0x70f39e), 0.8, range);
+    switchObjectMaterialMode(plane, solarSimulator, 'cumulative', new THREE.Color(0xa492f7), 0.8, range);
+    switchObjectMaterialMode(batchedMesh as THREE.Mesh, solarSimulator, 'cumulative', undefined, 0.8, range);
 }
 
 function switchToRealtimeMode() {

@@ -149,7 +149,8 @@ export const switchMaterialMode = (
     solarSimulator: SolarSimulator,
     mode: 'realtime' | 'cumulative',
     baseColor: THREE.Color = new THREE.Color(0xcccccc),
-    heatMapStrength: number = 0.8
+    heatMapStrength: number = 0.8,
+    colorRange?: { min: number; max: number }
 ): void => {
     const material = mesh.material as THREE.MeshStandardNodeMaterial;
 
@@ -160,7 +161,8 @@ export const switchMaterialMode = (
             solarSimulator.sunIntensity,
             {
                 ...DEFAULT_HEATMAP_CONFIG,
-                maxValue: 1200 // W/m²
+                minValue: colorRange?.min ?? 0,
+                maxValue: colorRange?.max ?? 1200 // W/m²
             }
         );
         const colorNode = createSolarOverlayNode(baseColor, heatMapNode, heatMapStrength);
@@ -173,7 +175,8 @@ export const switchMaterialMode = (
             meshCumulativeUniform,
             {
                 ...DEFAULT_HEATMAP_CONFIG,
-                maxValue: 6000 // Wh/m²
+                minValue: colorRange?.min ?? 0,
+                maxValue: colorRange?.max ?? 6000 // Wh/m²
             }
         );
         const colorNode = createSolarOverlayNode(baseColor, heatMapNode, heatMapStrength);
@@ -192,22 +195,24 @@ export const switchMaterialMode = (
  * @param mode Visualization mode to switch to
  * @param baseColor Base color for the material
  * @param heatMapStrength Blend strength
+ * @param colorRange Optional dynamic color range (min/max values for color mapping)
  */
 export const switchObjectMaterialMode = (
     object: THREE.Object3D,
     solarSimulator: SolarSimulator,
     mode: 'realtime' | 'cumulative',
     baseColor: THREE.Color = new THREE.Color(0xcccccc),
-    heatMapStrength: number = 0.8
+    heatMapStrength: number = 0.8,
+    colorRange?: { min: number; max: number }
 ): void => {
     if (object instanceof THREE.Mesh) {
         // Single mesh - switch its material
-        switchMaterialMode(object, solarSimulator, mode, baseColor, heatMapStrength);
+        switchMaterialMode(object, solarSimulator, mode, baseColor, heatMapStrength, colorRange);
     } else if (object instanceof THREE.Group) {
         // Group - recursively switch all child meshes
         object.traverse((child) => {
             if (child instanceof THREE.Mesh) {
-                switchMaterialMode(child, solarSimulator, mode, baseColor, heatMapStrength);
+                switchMaterialMode(child, solarSimulator, mode, baseColor, heatMapStrength, colorRange);
             }
         });
     }
